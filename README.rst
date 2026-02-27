@@ -54,8 +54,20 @@ of other UNIX targets. The simple steps to build QEMU are:
 
   mkdir build
   cd build
+
+  sudo apt-get install git libglib2.0-dev libfdt-dev libpixman-1-dev zlib1g-dev ninja-build \
+       python3-pip python3-setuptools python3-tomli python3-wheel
+       
+  sudo apt-get install libsdl2-dev libgtk-3-dev libvte-2.91-dev libncurses5-dev libcapstone-dev
+
   ../configure
   make
+
+ ../../qemu-glandagpu/build/qemu-system-x86_64 -enable-kvm \
+        -kernel arch/x86_64/boot/bzImage \
+        -append "root=/dev/sda console=ttyS0" \
+        -drive file=rootfs.img,format=raw \
+        -nographic -m 1G
 
 Additional information can also be found online via the QEMU website:
 
