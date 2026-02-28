@@ -1,14 +1,17 @@
 #include "qemu/osdep.h"
 #include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
 #include "qemu/log.h"
 #include "qom/object.h"
 #include "exec/hwaddr.h"
 #include "qapi/error.h"
 #include "ui/console.h"
+#include "qemu/timer.h"
 
 #define GLANDA_WIDTH  640
 #define GLANDA_HEIGHT 480
 #define GLANDA_VRAM_SIZE (GLANDA_WIDTH * GLANDA_HEIGHT * 4)
+#define GLANDA_REFRESH_INTERVAL_NS (1000000000 / 60) // 60Hz = ~16.6ms
 
 #define TYPE_GLANDA_GPU "glandagpu"
 OBJECT_DECLARE_SIMPLE_TYPE(GlandaGPUState, GLANDA_GPU)
@@ -32,6 +35,7 @@ struct GlandaGPUState {
     uint32_t ier;    // 0x18
 
     QemuConsole *con; // display
+    QEMUTimer *vsync_timer;
 };
 
 // MMIO Read
@@ -60,35 +64,121 @@ static uint64_t glandagpu_mmio_read(void *opaque, hwaddr offset, unsigned size)
     }
 }
 
+// Helper draw pixel
+static void glandagpu_draw_pixel(GlandaGPUState *s, int x, int y, uint32_t color)
+{
+    if (x >= 0 && x < 640 && y >= 0 && y < 480) {
+        uint32_t *vram = (uint32_t *)memory_region_get_ram_ptr(&s->vram);
+        vram[y * 640 + x] = color;
+    }
+}
+
+static void glandagpu_update_irq(GlandaGPUState *s)
+{
+    // Check if any enabled interrupt is pending
+    if (s->isr & s->ier) {
+        qemu_set_irq(s->irq, 1);
+    } else {
+        qemu_set_irq(s->irq, 0);
+    }
+}
+
+static void glandagpu_execute_command(GlandaGPUState *s)
+{
+    uint8_t cmd = s->ctrl & 0xF;
+
+    int x0 = s->coord0 & 0x3FF;
+    int y0 = (s->coord0 >> 16) & 0x3FF;
+    int x1_w = s->coord1 & 0x3FF;
+    int y1_h = (s->coord1 >> 16) & 0x3FF;
+    uint32_t color = s->color & 0xFFF;
+
+    // Set BUSY
+    s->status |= 0x1;
+
+    switch (cmd) {
+    case 0x1: // Clear Screen
+    {
+        uint32_t *vram = (uint32_t *)memory_region_get_ram_ptr(&s->vram);
+        for (int i = 0; i < (640 * 480); i++) {
+            vram[i] = color;
+        }
+        break;
+    }
+    case 0x2: // Rectangle
+    {
+        int w = x1_w;
+        int h = y1_h;
+        for (int y = y0; y < y0 + h; y++) {
+            for (int x = x0; x < x0 + w; x++) {
+                glandagpu_draw_pixel(s, x, y, color);
+            }
+        }
+        break;
+    }
+    case 0x3: // Line (Bresenham's)
+    {
+        int x1 = x1_w;
+        int y1 = y1_h;
+        int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+        int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+        int err = dx + dy, e2;
+
+        while (1) {
+            glandagpu_draw_pixel(s, x0, y0, color);
+            if (x0 == x1 && y0 == y1) break;
+            e2 = 2 * err;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+        }
+        break;
+    }
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR, "GlandaGPU: Unknown CMD 0x%x\n", cmd);
+        break;
+    }
+
+    // Clear BUSY
+    s->status &= ~0x1; 
+
+    //Raise Done interrupt
+    s->isr |= 0x1;
+    glandagpu_update_irq(s);
+}
+
 // MMIO Write
 static void glandagpu_mmio_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
 {
     GlandaGPUState *s = GLANDA_GPU(opaque);
 
     switch (offset) {
-        case 0x04: 
-            s->ctrl = val;
-            // TODO: If Bit 4 (START) is 1, execute the 2D command here
-            printf("GlandaGPU: CMD triggered! CTRL=0x%08lx\n", val);
-            break;
-        case 0x08: 
-            s->coord0 = val; 
-            break;
-        case 0x0C: 
-            s->coord1 = val; 
-            break;
-        case 0x10: 
-            s->color = val; 
-            break;
-        case 0x14: 
-            s->isr &= ~val; // W1C 
-            break; 
-        case 0x18: 
-            s->ier = val; 
-            break;
-        default:
-            qemu_log_mask(LOG_GUEST_ERROR, "GlandaGPU: Bad write at offset 0x%lx\n", offset);
-            break;
+    case 0x00: 
+        break;
+    case 0x04: // CTRL
+        s->ctrl = val;
+        if (val & (1 << 4)) {
+            glandagpu_execute_command(s);
+        }
+        break;
+    case 0x08: 
+        s->coord0 = val; 
+        break;
+    case 0x0C: 
+        s->coord1 = val; 
+        break;
+    case 0x10: 
+        s->color = val; 
+        break;
+    case 0x14: // W1C
+        s->isr &= ~val;
+        glandagpu_update_irq(s);
+        break;
+    case 0x18: // IER Write to enable/disable interrupts
+        s->ier = val;
+        glandagpu_update_irq(s);
+        break;
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR, "GlandaGPU: Bad write 0x%lx\n", offset);
     }
 }
 
@@ -128,7 +218,6 @@ static void glandagpu_update_display(void *opaque)
             g = (g << 4) | g;
             b = (b << 4) | b;
 
-            // Write to QEMU Surface (Format XRGB8888)
             dest_pixels[y * stride + x] = (r << 16) | (g << 8) | b;
         }
     }
@@ -152,6 +241,17 @@ static const MemoryRegionOps glandagpu_mmio_ops = {
     },
 };
 
+static void glandagpu_vsync_cb(void *opaque)
+{
+    GlandaGPUState *s = GLANDA_GPU(opaque);
+
+    //raise VSync interrupt
+    s->isr |= (1 << 1);
+    glandagpu_update_irq(s);
+
+    timer_mod(s->vsync_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + GLANDA_REFRESH_INTERVAL_NS);
+}
+
 static void glandagpu_realize(DeviceState *dev, Error **errp)
 {
     GlandaGPUState *s = GLANDA_GPU(dev);
@@ -174,6 +274,10 @@ static void glandagpu_realize(DeviceState *dev, Error **errp)
     // Init console
     s->con = graphic_console_init(DEVICE(dev), 0, &glandagpu_ops, s);
     qemu_console_resize(s->con, GLANDA_WIDTH, GLANDA_HEIGHT);
+
+    // Start VSync timer
+    s->vsync_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, glandagpu_vsync_cb, s);
+    timer_mod(s->vsync_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + GLANDA_REFRESH_INTERVAL_NS);
 }
 
 static void glandagpu_class_init(ObjectClass *klass, const void *data)
