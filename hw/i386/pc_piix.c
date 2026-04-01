@@ -324,7 +324,7 @@ static void pc_init1(MachineState *machine, const char *pci_type)
     // add GlandaGPU to motherboard since it is a SysBusDevice
     DeviceState *glanda = qdev_new("glandagpu");
     sysbus_realize_and_unref(SYS_BUS_DEVICE(glanda), &error_fatal);
-    sysbus_mmio_map(SYS_BUS_DEVICE(glanda), 0, 0x40000000); // map it to 0x40000000
+    sysbus_mmio_map(SYS_BUS_DEVICE(glanda), 0, 0xC0000000); // map it to 0xC0000000
     sysbus_connect_irq(SYS_BUS_DEVICE(glanda), 0, x86ms->gsi[11]); // connect IRQ
 }
 

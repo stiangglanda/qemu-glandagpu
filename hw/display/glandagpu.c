@@ -11,6 +11,8 @@
 #define GLANDA_WIDTH  640
 #define GLANDA_HEIGHT 480
 #define GLANDA_VRAM_SIZE (GLANDA_WIDTH * GLANDA_HEIGHT * 4)
+#define GLANDA_MMIO_OFFSET 0x00200000
+#define GLANDA_CONTAINER_SIZE 0x01000000
 #define GLANDA_REFRESH_INTERVAL_NS (1000000000 / 60) // 60Hz = ~16.6ms
 
 #define TYPE_GLANDA_GPU "glandagpu"
@@ -234,7 +236,7 @@ static const GraphicHwOps glandagpu_ops = {
 static const MemoryRegionOps glandagpu_mmio_ops = {
     .read = glandagpu_mmio_read,
     .write = glandagpu_mmio_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -258,15 +260,15 @@ static void glandagpu_realize(DeviceState *dev, Error **errp)
     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
 
     // Container region
-    memory_region_init(&s->container, OBJECT(s), "glandagpu.container", 0x200020);
+    memory_region_init(&s->container, OBJECT(s), "glandagpu.container", GLANDA_CONTAINER_SIZE);
 
     // VRAM at 0x0
     memory_region_init_ram(&s->vram, OBJECT(s), "glandagpu.vram", GLANDA_VRAM_SIZE, &error_fatal);
     memory_region_add_subregion(&s->container, 0x000000, &s->vram);
 
-    // MMIO at 0x200000
+    // MMIO at offset
     memory_region_init_io(&s->mmio, OBJECT(s), &glandagpu_mmio_ops, s, "glandagpu.mmio", 32);
-    memory_region_add_subregion(&s->container, 0x200000, &s->mmio);
+    memory_region_add_subregion(&s->container, GLANDA_MMIO_OFFSET, &s->mmio);
 
     sysbus_init_mmio(sbd, &s->container);
     sysbus_init_irq(sbd, &s->irq);
