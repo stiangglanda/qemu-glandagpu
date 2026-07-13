@@ -63,11 +63,13 @@ of other UNIX targets. The simple steps to build QEMU are:
   ../configure
   make
 
- ../../qemu-glandagpu/build/qemu-system-x86_64 -enable-kvm \
-        -kernel arch/x86_64/boot/bzImage \
-        -append "root=/dev/sda console=ttyS0" \
-        -drive file=rootfs.img,format=raw \
-        -nographic -m 1G
+ ../../qemu-glandagpu/build/qemu-system-x86_64 \              
+    -enable-kvm -m 512M \
+    -kernel arch/x86_64/boot/bzImage \
+    -append "root=/dev/sda console=ttyS0" \
+    -drive file=rootfs.img,format=raw \
+    -serial stdio \
+    -vga none
 
 Additional information can also be found online via the QEMU website:
 
