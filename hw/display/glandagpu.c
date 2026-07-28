@@ -1,6 +1,6 @@
 #include "qemu/osdep.h"
-#include "hw/core/sysbus.h"
-#include "hw/core/irq.h"
+#include "hw/pci/pci.h"
+#include "hw/pci/pci_device.h"
 #include "qemu/log.h"
 #include "qom/object.h"
 #include "exec/hwaddr.h"
@@ -11,21 +11,23 @@
 #define GLANDA_WIDTH  640
 #define GLANDA_HEIGHT 480
 #define GLANDA_VRAM_SIZE (GLANDA_WIDTH * GLANDA_HEIGHT * 4)
-#define GLANDA_MMIO_OFFSET 0x00200000
-#define GLANDA_CONTAINER_SIZE 0x01000000
+/* PCI BARs must be power-of-two sized, GLANDA_VRAM_SIZE isn't(round up) */
+#define GLANDA_VRAM_BAR_SIZE 0x200000
+#define GLANDA_MMIO_SIZE  0x1000 /* 4K, BAR min size for a memory BAR */
 #define GLANDA_REFRESH_INTERVAL_NS (1000000000 / 60) // 60Hz = ~16.6ms
+
+/* Reserved for experimental use (docs/specs/pci-ids.rst) */
+#define PCI_VENDOR_ID_GLANDA   0x1af4
+#define PCI_DEVICE_ID_GLANDA   0x10f0
 
 #define TYPE_GLANDA_GPU "glandagpu"
 OBJECT_DECLARE_SIMPLE_TYPE(GlandaGPUState, GLANDA_GPU)
 
 struct GlandaGPUState {
-    SysBusDevice parent_obj;
+    PCIDevice parent_obj;
 
-    MemoryRegion container;
     MemoryRegion vram;
     MemoryRegion mmio;
-
-    qemu_irq irq;
 
     // Registers
     uint32_t status; // 0x00
@@ -46,19 +48,19 @@ static uint64_t glandagpu_mmio_read(void *opaque, hwaddr offset, unsigned size)
     GlandaGPUState *s = GLANDA_GPU(opaque);
 
     switch (offset) {
-        case 0x00: 
+        case 0x00:
             return s->status;
-        case 0x04: 
+        case 0x04:
             return s->ctrl;
-        case 0x08: 
+        case 0x08:
             return s->coord0;
-        case 0x0C: 
+        case 0x0C:
             return s->coord1;
-        case 0x10: 
+        case 0x10:
             return s->color;
-        case 0x14: 
+        case 0x14:
             return s->isr;
-        case 0x18: 
+        case 0x18:
             return s->ier;
         default:
             qemu_log_mask(LOG_GUEST_ERROR, "GlandaGPU: Bad read at offset 0x%lx\n", offset);
@@ -77,11 +79,13 @@ static void glandagpu_draw_pixel(GlandaGPUState *s, int x, int y, uint32_t color
 
 static void glandagpu_update_irq(GlandaGPUState *s)
 {
+    PCIDevice *pdev = PCI_DEVICE(s);
+
     // Check if any enabled interrupt is pending
     if (s->isr & s->ier) {
-        qemu_set_irq(s->irq, 1);
+        pci_irq_assert(pdev);
     } else {
-        qemu_set_irq(s->irq, 0);
+        pci_irq_deassert(pdev);
     }
 }
 
@@ -141,7 +145,7 @@ static void glandagpu_execute_command(GlandaGPUState *s)
     }
 
     // Clear BUSY
-    s->status &= ~0x1; 
+    s->status &= ~0x1;
 
     //Raise Done interrupt
     s->isr |= 0x1;
@@ -154,7 +158,7 @@ static void glandagpu_mmio_write(void *opaque, hwaddr offset, uint64_t val, unsi
     GlandaGPUState *s = GLANDA_GPU(opaque);
 
     switch (offset) {
-    case 0x00: 
+    case 0x00:
         break;
     case 0x04: // CTRL
         s->ctrl = val;
@@ -162,14 +166,14 @@ static void glandagpu_mmio_write(void *opaque, hwaddr offset, uint64_t val, unsi
             glandagpu_execute_command(s);
         }
         break;
-    case 0x08: 
-        s->coord0 = val; 
+    case 0x08:
+        s->coord0 = val;
         break;
-    case 0x0C: 
-        s->coord1 = val; 
+    case 0x0C:
+        s->coord1 = val;
         break;
-    case 0x10: 
-        s->color = val; 
+    case 0x10:
+        s->color = val;
         break;
     case 0x14: // W1C
         s->isr &= ~val;
@@ -206,7 +210,7 @@ static void glandagpu_update_display(void *opaque)
 
     for (int y = 0; y < GLANDA_HEIGHT; y++) {
         for (int x = 0; x < GLANDA_WIDTH; x++) {
-            
+
             // 32-bit pixel (only lower 12 bits)
             uint32_t raw_val = src_vram[y * GLANDA_WIDTH + x];
 
@@ -254,27 +258,28 @@ static void glandagpu_vsync_cb(void *opaque)
     timer_mod(s->vsync_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + GLANDA_REFRESH_INTERVAL_NS);
 }
 
-static void glandagpu_realize(DeviceState *dev, Error **errp)
+static void glandagpu_pci_realize(PCIDevice *pdev, Error **errp)
 {
-    GlandaGPUState *s = GLANDA_GPU(dev);
-    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
+    GlandaGPUState *s = GLANDA_GPU(pdev);
 
-    // Container region
-    memory_region_init(&s->container, OBJECT(s), "glandagpu.container", GLANDA_CONTAINER_SIZE);
+    /* BAR1, prefetchable(framebuffer) */
+    memory_region_init_ram(&s->vram, OBJECT(s), "glandagpu.vram",
+                            GLANDA_VRAM_BAR_SIZE, &error_fatal);
+    pci_register_bar(pdev, 1,
+                      PCI_BASE_ADDRESS_SPACE_MEMORY |
+                      PCI_BASE_ADDRESS_MEM_PREFETCH,
+                      &s->vram);
 
-    // VRAM at 0x0
-    memory_region_init_ram(&s->vram, OBJECT(s), "glandagpu.vram", GLANDA_VRAM_SIZE, &error_fatal);
-    memory_region_add_subregion(&s->container, 0x000000, &s->vram);
+    /* BAR0, non-prefetchable(commands) */
+    memory_region_init_io(&s->mmio, OBJECT(s), &glandagpu_mmio_ops, s,
+                           "glandagpu.mmio", GLANDA_MMIO_SIZE);
+    pci_register_bar(pdev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->mmio);
 
-    // MMIO at offset
-    memory_region_init_io(&s->mmio, OBJECT(s), &glandagpu_mmio_ops, s, "glandagpu.mmio", 32);
-    memory_region_add_subregion(&s->container, GLANDA_MMIO_OFFSET, &s->mmio);
-
-    sysbus_init_mmio(sbd, &s->container);
-    sysbus_init_irq(sbd, &s->irq);
+    /* legacy INTx TODO use MSI */
+    pdev->config[PCI_INTERRUPT_PIN] = 1;
 
     // Init console
-    s->con = graphic_console_init(DEVICE(dev), 0, &glandagpu_ops, s);
+    s->con = graphic_console_init(DEVICE(pdev), 0, &glandagpu_ops, s);
     qemu_console_resize(s->con, GLANDA_WIDTH, GLANDA_HEIGHT);
 
     // Start VSync timer
@@ -282,19 +287,39 @@ static void glandagpu_realize(DeviceState *dev, Error **errp)
     timer_mod(s->vsync_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + GLANDA_REFRESH_INTERVAL_NS);
 }
 
+static void glandagpu_pci_exit(PCIDevice *pdev)
+{
+    GlandaGPUState *s = GLANDA_GPU(pdev);
+
+    timer_free(s->vsync_timer);
+}
+
 static void glandagpu_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
-    dc->realize = glandagpu_realize;
+    PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
+
+    k->realize = glandagpu_pci_realize;
+    k->exit = glandagpu_pci_exit;
+    k->vendor_id = PCI_VENDOR_ID_GLANDA;
+    k->device_id = PCI_DEVICE_ID_GLANDA;
+    k->revision = 0x01;
+    k->class_id = PCI_CLASS_DISPLAY_OTHER;
+
     dc->desc = "GlandaGPU 2D Hardware Accelerator";
+    set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
 }
 
 static const TypeInfo glandagpu_types[] = {
     {
         .name          = TYPE_GLANDA_GPU,
-        .parent        = TYPE_SYS_BUS_DEVICE,
+        .parent        = TYPE_PCI_DEVICE,
         .instance_size = sizeof(GlandaGPUState),
         .class_init    = glandagpu_class_init,
+        .interfaces = (InterfaceInfo[]) {
+            { INTERFACE_CONVENTIONAL_PCI_DEVICE },
+            { },
+        },
     },
 };
 
