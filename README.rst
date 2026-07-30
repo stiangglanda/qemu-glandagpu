@@ -63,17 +63,14 @@ of other UNIX targets. The simple steps to build QEMU are:
   ../configure
   make
 
-  # Testing the GlandaGPU Linux DRM Driver
-  # Note: The GlandaGPU is hardcoded into the x86 sysbus initialization in this fork.
-  # No extra -device flags are needed.
-
- ../../qemu-glandagpu/build/qemu-system-x86_64 \              
-    -enable-kvm -m 512M \
-    -kernel arch/x86_64/boot/bzImage \
-    -append "root=/dev/sda console=ttyS0" \
-    -drive file=rootfs.img,format=raw \
-    -serial stdio \
-    -vga none
+ ../../qemu-glandagpu/build/qemu-system-x86_64 \
+   -enable-kvm -m 512M \
+   -kernel arch/x86_64/boot/bzImage \
+   -append "root=/dev/sda console=ttyS0" \
+   -drive file=rootfs.img,format=raw \
+   -serial stdio \
+   -vga none \
+   -device glandagpu
 
 Additional information can also be found online via the QEMU website:
 
