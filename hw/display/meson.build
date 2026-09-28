@@ -147,3 +147,5 @@ system_ss.add(when: 'CONFIG_OMAP', if_true: files('omap_lcdc.c'))
 modules += { 'hw-display': hw_display_modules }
 
 system_ss.add(when: 'CONFIG_GLANDAGPU', if_true: files('glandagpu.c'))
+system_ss.add(when: 'CONFIG_GLANDAGPU_PCI', if_true: files('glandagpu-pci.c'))
+system_ss.add(when: 'CONFIG_GLANDAGPU_SYSBUS', if_true: files('glandagpu-sysbus.c'))

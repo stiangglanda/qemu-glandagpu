@@ -152,5 +152,13 @@ config MAC_PVG_PCI
 
 config GLANDAGPU
     bool
+
+config GLANDAGPU_PCI
+    bool
     default y if PCI_DEVICES
     depends on PCI
+    select GLANDAGPU
+
+config GLANDAGPU_SYSBUS
+    bool
+    select GLANDAGPU
