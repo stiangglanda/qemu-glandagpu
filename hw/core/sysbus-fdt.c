@@ -34,6 +34,7 @@
 #include "hw/arm/smmuv3.h"
 #include "hw/core/platform-bus.h"
 #include "hw/display/ramfb.h"
+#include "hw/display/glandagpu-sysbus.h"
 #include "hw/uefi/var-service-api.h"
 #include "hw/arm/fdt.h"
 
@@ -118,6 +119,35 @@ static int add_uefi_vars_node(SysBusDevice *sbdev, void *opaque)
     return 0;
 }
 
+static int add_glandagpu_fdt_node(SysBusDevice *sbdev, void *opaque)
+{
+    PlatformBusFDTData *data = opaque;
+    PlatformBusDevice *pbus = data->pbus;
+    void *fdt = data->fdt;
+    uint64_t mmio_base, vram_base;
+    uint64_t mmio_size, vram_size;
+    int irq;
+    char *nodename;
+
+    mmio_base = platform_bus_get_mmio_addr(pbus, sbdev, 0);
+    vram_base = platform_bus_get_mmio_addr(pbus, sbdev, 1);
+    mmio_size = memory_region_size(sysbus_mmio_get_region(sbdev, 0));
+    vram_size = memory_region_size(sysbus_mmio_get_region(sbdev, 1));
+    irq = platform_bus_get_irqn(pbus, sbdev, 0) + data->irq_start;
+
+    nodename = g_strdup_printf("%s/gpu@%" PRIx64, data->pbus_node_name,
+                               mmio_base);
+    qemu_fdt_add_subnode(fdt, nodename);
+    qemu_fdt_setprop_string(fdt, nodename, "compatible", "glanda,glandagpu");
+    qemu_fdt_setprop_cells(fdt, nodename, "reg",
+                           mmio_base, mmio_size, vram_base, vram_size);
+    qemu_fdt_setprop_cells(fdt, nodename, "interrupts",
+                           GIC_FDT_IRQ_TYPE_SPI, irq,
+                           GIC_FDT_IRQ_FLAGS_LEVEL_HI);
+    g_free(nodename);
+    return 0;
+}
+
 static int no_fdt_node(SysBusDevice *sbdev, void *opaque)
 {
     return 0;
@@ -140,6 +170,7 @@ static const BindingEntry bindings[] = {
     TYPE_BINDING(TYPE_ARM_SMMUV3, no_fdt_node),
     TYPE_BINDING(TYPE_RAMFB_DEVICE, no_fdt_node),
     TYPE_BINDING(TYPE_UEFI_VARS_SYSBUS, add_uefi_vars_node),
+    TYPE_BINDING(TYPE_GLANDA_GPU_SYSBUS, add_glandagpu_fdt_node),
     TYPE_BINDING("", NULL), /* last element */
 };
 

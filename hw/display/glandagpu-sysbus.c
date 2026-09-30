@@ -1,11 +1,11 @@
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qapi/error.h"
 #include "qom/object.h"
+#include "hw/display/glandagpu-sysbus.h"
 
 #include "glandagpu.h"
 
-#define TYPE_GLANDA_GPU_SYSBUS "glandagpu-sysbus"
 OBJECT_DECLARE_SIMPLE_TYPE(GlandaGPUSysBusState, GLANDA_GPU_SYSBUS)
 
 struct GlandaGPUSysBusState {
@@ -42,7 +42,7 @@ static void glandagpu_sysbus_class_init(ObjectClass *klass, const void *data)
     dc->unrealize = glandagpu_sysbus_unrealize;
     dc->desc = "GlandaGPU (sysbus)";
     set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
-    dc->user_creatable = false;
+    dc->user_creatable = true;
 }
 
 static const TypeInfo glandagpu_sysbus_types[] = {
